@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
-from os.path import isfile, join
+from os.path import join
 from torch.utils.data import Dataset
 from PIL import Image
 from sklearn.metrics import precision_recall_fscore_support as score
@@ -56,29 +56,6 @@ class FaceMaskDataset(Dataset):
         return image, self.dataset[index]['target']
 
 
-# Load images from the dataset
-def load_images():
-    dat = []
-
-    def helper(cls, folder):
-        for filename in os.listdir(folder):
-            try:
-                sample = {}
-                img = Image.open(join(folder, filename)).convert('RGB')
-                sample['image'] = img
-                sample['target'] = classes[cls]
-                dat.append(sample)
-            except:
-                continue
-
-    helper("cloth", cloth_folder)
-    helper("n95",n95_folder)
-    helper("n95valve",n95valve_folder)
-    helper("surgical",surgical_folder)
-    helper("without_mask",without_mask_folder)
-
-    return dat
-
 
 class FaceMaskClassificationBase(nn.Module):
     def training_step(self, batch):
@@ -117,7 +94,7 @@ class CNN(FaceMaskClassificationBase):
             nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.1),
-            nn.Linear(512, num_of_classes),
+            nn.Linear(512, 5),
         )
 
     def forward(self, x):
@@ -153,49 +130,28 @@ def fit(epochs, lr, model, train_loader, optimizer_func):
     return results
 
 
+# Load images from the dataset
+def load_images():
+    dat = []
 
-# LOADING AND SPLITTING DATASET
-train_split_percentage = 0.75
-test_split_percentage = 0.25
+    def helper(cls, folder):
+        for filename in os.listdir(folder):
+            try:
+                sample = {}
+                img = Image.open(join(folder, filename)).convert('RGB')
+                sample['image'] = img
+                sample['target'] = classes[cls]
+                dat.append(sample)
+            except:
+                continue
 
-# load images into memory
-images = load_images()
-random.shuffle(images)
-size_of_the_dataset = len(images)
-print("size_of_the_dataset", size_of_the_dataset)
+    helper("cloth", cloth_folder)
+    helper("n95",n95_folder)
+    helper("n95valve",n95valve_folder)
+    helper("surgical",surgical_folder)
+    helper("without_mask",without_mask_folder)
 
-num_of_classes = len(classes.keys())
-
-train_indexes = [0, train_split_percentage * size_of_the_dataset]
-test_indexes = [train_split_percentage * size_of_the_dataset, size_of_the_dataset]
-
-print(f"Effective train split = {train_indexes[0]} to {train_indexes[1]}")
-print(f"Effective test split = {test_indexes[0]} to {test_indexes[1]}")
-
-
-transform = transforms.Compose(
-    [transforms.Resize((250, 250)),
-     transforms.ToTensor(),
-     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-
-
-print("Loading training and validation set")
-
-train_dataset = FaceMaskDataset(images, train_indexes, transform)
-print("Train Dataset length ", len(train_dataset))
-
-train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=25, shuffle=True, num_workers=0)
-
-
-#COMPILE AND TEST MODEL
-model = CNN()
-
-results = fit(2, 0.01, model, train_loader, torch.optim.ASGD)
-
-#save model
-torch.save(model.state_dict(), join(BASE, "model.pth"))
-
-
+    return dat
 
 # Plot the losses in each epoch
 def plot_losses(results):
@@ -205,32 +161,6 @@ def plot_losses(results):
     plt.ylabel('Loss')
     plt.legend(['Training Loss'])
     plt.title('Loss vs. No. of epochs');
-
-plot_losses(results)
-
-#Testing phase
-test_dataset = FaceMaskDataset(images, test_indexes, conversion=transform)
-test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=25, shuffle=True, num_workers=0)
-
-
-y_true = torch.tensor([])
-y_preds = torch.tensor([])
-
-# test-the-model
-model.eval()  # turn off layers like Dropout layers, BatchNorm Layers
-with torch.no_grad():
-    correct = 0
-    total = 0
-    for images, labels in test_loader:
-        y_true = torch.cat((y_true, labels))
-
-        outputs = model(images)
-        _, predicted = torch.max(outputs.data, 1)
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
-        y_preds = torch.cat((y_preds, predicted))
-
-    print('Test Accuracy of the model: {} %'.format(100 * correct / total))
 
 
 # show confusion matrix
@@ -245,9 +175,80 @@ def show_confusion_matrix(y_true, y_preds):
     ax.yaxis.set_ticklabels([i for i in classes.keys()])
     plt.show()
 
+if __name__ == "__main__":
 
-show_confusion_matrix(y_true, y_preds)
+
+    # LOADING AND SPLITTING DATASET
+    train_split_percentage = 0.75
+    test_split_percentage = 0.25
+
+    # Load images into memory
+    images = load_images()
+    random.shuffle(images)
+    size_of_the_dataset = len(images)
+    print("size_of_the_dataset", size_of_the_dataset)
+
+    num_of_classes = len(classes.keys())
+
+    train_indexes = [0, train_split_percentage * size_of_the_dataset]
+    test_indexes = [train_split_percentage * size_of_the_dataset, size_of_the_dataset]
+
+    print("Effective train split = {} to {}".format(train_indexes[0], train_indexes[1]) )
+    print("Effective test split = {} to {}".format(test_indexes[0],test_indexes[1]))
 
 
-precision, recall, fscore, support = score(y_true, y_preds)
-print(classification_report(y_true, y_preds))
+    transform = transforms.Compose(
+        [transforms.Resize((250, 250)),
+         transforms.ToTensor(),
+         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+
+    print("Loading training and validation set")
+    train_dataset = FaceMaskDataset(images, train_indexes, transform)
+    print("Train Dataset length ", len(train_dataset))
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=25, shuffle=True, num_workers=0)
+
+
+    # COMPILE AND TEST MODEL
+    print("Training our Model")
+    model = CNN()
+
+    results = fit(2, 0.01, model, train_loader, torch.optim.ASGD)
+
+    # Save model
+    print("Saving model to ", join(BASE, "model.pth"))
+    torch.save(model.state_dict(), join(BASE, "model.pth"))
+
+    # Plotting loss vs epoch chart
+    plot_losses(results)
+
+
+    # Testing phase
+    test_dataset = FaceMaskDataset(images, test_indexes, conversion=transform)
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=25, shuffle=True, num_workers=0)
+
+    y_true = torch.tensor([])
+    y_preds = torch.tensor([])
+
+    # Test the model
+    model.eval()  # turn off layers like Dropout layers, BatchNorm Layers
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for images, labels in test_loader:
+            y_true = torch.cat((y_true, labels))
+
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            y_preds = torch.cat((y_preds, predicted))
+
+        print('Test Accuracy of the model: {} %'.format(100 * correct / total))
+
+
+    # Display Confusion matrix and other important parameters
+    show_confusion_matrix(y_true, y_preds)
+
+    precision, recall, fscore, support = score(y_true, y_preds)
+    print(classification_report(y_true, y_preds))
