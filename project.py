@@ -1,5 +1,7 @@
 
 import os
+
+import numpy as np
 import seaborn as sns
 import random
 import torch
@@ -8,8 +10,10 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 from os.path import join
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, SubsetRandomSampler
 from PIL import Image
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import precision_recall_fscore_support as score
 from sklearn.metrics import confusion_matrix, classification_report
 
@@ -51,21 +55,33 @@ class FaceMaskDataset(Dataset):
 
     def __getitem__(self, index):
         image = self.dataset[index]['image']
-        if self.conversion is not None:
-            image = self.conversion(image)
         return image, self.dataset[index]['target']
-
 
 
 class FaceMaskClassificationBase(nn.Module):
     def training_step(self, batch):
         images, labels = batch
+        images, labels = images.to(device), labels.to(device)
         out = self(images)  # Generate predictions
         loss = F.cross_entropy(out, labels)  # Calculate loss
-        return loss
+        scores, predictions = torch.max(out.data, 1)
+        train_correct = (predictions == labels).sum().item()
+        return loss, train_correct
+
+    def validation_step(self, batch):
+        images, labels = batch
+        images, labels = images.to(device), labels.to(device)
+        out = self(images)  # Generate predictions
+        loss = F.cross_entropy(out, labels)  # Calculate loss
+        scores, predictions = torch.max(out.data, 1)
+        valid_correct = (predictions == labels).sum().item()
+        return loss, valid_correct
 
     def epoch_end(self, epoch, result):
-        print("Epoch [{}], train_loss: {:.4f}".format(epoch + 1, result['train_loss']))
+        print(
+            "Epoch [{}], train_loss: {:.4f}, train_accuracy: {:.4f}, valid_loss: {:.4f}, valid_accuracy: {:.4f}".format(
+                epoch + 1, result['train_loss'], result['train_accuracy']
+                , result['valid_loss'], result['valid_accuracy']))
 
 
 class CNN(FaceMaskClassificationBase):
@@ -104,18 +120,34 @@ class CNN(FaceMaskClassificationBase):
         return x
 
 
+@torch.no_grad()
+def evaluate_model(model, val_loader):
+    model.eval()
+    valid_losses = []
+    valid_correct = 0
 
-def fit(epochs, lr, model, train_loader, optimizer_func):
+    for batch in val_loader:
+        loss, correct = model.validation_step(batch)
+        valid_losses.append(loss)
+        valid_correct += correct
+
+    return valid_losses, valid_correct
+
+
+def fit(epochs, lr, model, train_loader, valid_loader, opt_func=torch.optim.SGD):
     results = []
-    optimizer = optimizer_func(model.parameters(), lr)
+    optimizer = opt_func(model.parameters(), lr)
     for epoch in range(epochs):
         model.train()
         train_losses = []
+        train_correct = 0
         for batch in train_loader:
+            images, labels = batch
             # forward-pass: compute-predicted-outputs-by-passing-inputs-to-the-model
-            loss = model.training_step(batch)
+            loss, correct = model.training_step(batch)
             # update-training-loss
             train_losses.append(loss)
+            train_correct += correct
             # backward-pass: compute-gradient-of-the-loss-wrt-model-parameters
             loss.backward()
             # perform-a-single-optimization-step (parameter-update)
@@ -123,35 +155,126 @@ def fit(epochs, lr, model, train_loader, optimizer_func):
             # clear-the-gradients-of-all-optimized-variables
             optimizer.zero_grad()
 
-        result = {'train_loss': torch.stack(train_losses).mean().item()}
+        valid_losses, valid_correct = evaluate_model(model, valid_loader)
+
+        train_acc = (train_correct / (len(train_split) * 0.9)) * 100
+        valid_acc = (valid_correct / (len(train_split) * 0.1)) * 100
+        result = {}
+        result['train_loss'] = torch.stack(train_losses).mean().item()
+        result['train_accuracy'] = train_acc
+        result['valid_loss'] = torch.stack(valid_losses).mean().item()
+        result['valid_accuracy'] = valid_acc
         model.epoch_end(epoch, result)
         results.append(result)
 
     return results
 
+transform = transforms.Compose(
+    [transforms.Resize((250, 250)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                       std=[0.229, 0.224, 0.225])])
 
 # Load images from the dataset
 def load_images():
-    dat = []
+  dat = []
+  cnt = 0
+  for filename in os.listdir(cloth_folder):
+    try:
+        sample = {}
+        img = Image.open(os.path.join(cloth_folder, filename)).convert('RGB')
+        img = transform(img)
+        sample['image'] = img
+        sample['target'] = classes['cloth']
+        dat.append(sample)
+        cnt += 1
+    except:
+        continue
+  print(cnt)
 
-    def helper(cls, folder):
-        for filename in os.listdir(folder):
-            try:
-                sample = {}
-                img = Image.open(join(folder, filename)).convert('RGB')
-                sample['image'] = img
-                sample['target'] = classes[cls]
-                dat.append(sample)
-            except:
-                continue
+  for filename in os.listdir(n95_folder):
+    try:
+        sample = {}
+        img = Image.open(os.path.join(n95_folder, filename)).convert('RGB')
+        img = transform(img)
+        sample['image'] = img
+        sample['target'] = classes['n95']
+        dat.append(sample)
+        cnt += 1
+    except:
+        continue
+  print(cnt)
 
-    helper("cloth", cloth_folder)
-    helper("n95",n95_folder)
-    helper("n95valve",n95valve_folder)
-    helper("surgical",surgical_folder)
-    helper("without_mask",without_mask_folder)
+  for filename in os.listdir(n95valve_folder):
+    try:
+        sample = {}
+        img = Image.open(os.path.join(n95valve_folder, filename)).convert('RGB')
+        img = transform(img)
+        sample['image'] = img
+        sample['target'] = classes['n95valve']
+        dat.append(sample)
+        cnt += 1
+    except:
+        continue
+  print(cnt)
 
-    return dat
+  for filename in os.listdir(surgical_folder):
+    try:
+        sample = {}
+        img = Image.open(os.path.join(surgical_folder, filename)).convert('RGB')
+        img = transform(img)
+        sample['image'] = img
+        sample['target'] = classes['surgical']
+        dat.append(sample)
+        cnt += 1
+    except:
+        continue
+  print(cnt)
+
+  for filename in os.listdir(without_mask_folder):
+    try:
+        sample = {}
+        img = Image.open(os.path.join(without_mask_folder, filename)).convert('RGB')
+        img = transform(img)
+        sample['image'] = img
+        sample['target'] = classes['without_mask']
+        dat.append(sample)
+        cnt += 1
+    except:
+        continue
+  print(cnt)
+  return dat
+
+
+def evaluate():
+    y_true = torch.tensor([])
+    y_true = y_true.to(device)
+    y_preds = torch.tensor([])
+    y_preds = y_preds.to(device)
+
+    # test-the-model
+    model.eval()  # it-disables-dropout
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for images, labels in test_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            y_true = torch.cat((y_true, labels))
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            y_preds = torch.cat((y_preds, predicted))
+
+        print('\nTest Accuracy of the model: {} %'.format(100 * correct / total))
+
+    y_true = y_true.to('cpu')
+    y_preds = y_preds.to('cpu')
+
+    precision, recall, fscore, support = score(y_true, y_preds)
+    print(classification_report(y_true, y_preds))
+
 
 # Plot the losses in each epoch
 def plot_losses(results):
@@ -178,10 +301,6 @@ def show_confusion_matrix(y_true, y_preds):
 if __name__ == "__main__":
 
 
-    # LOADING AND SPLITTING DATASET
-    train_split_percentage = 0.75
-    test_split_percentage = 0.25
-
     # Load images into memory
     images = load_images()
     random.shuffle(images)
@@ -190,43 +309,48 @@ if __name__ == "__main__":
 
     num_of_classes = len(classes.keys())
 
-    train_indexes = [0, train_split_percentage * size_of_the_dataset]
-    test_indexes = [train_split_percentage * size_of_the_dataset, size_of_the_dataset]
+    data = FaceMaskDataset(images, [0, size_of_the_dataset], conversion=transform)
 
-    print("Effective train split = {} to {}".format(train_indexes[0], train_indexes[1]) )
-    print("Effective test split = {} to {}".format(test_indexes[0],test_indexes[1]))
+    print(len(data))
+    TEST_SIZE = 0.15
 
+    train_indices, test_indices = train_test_split(range(len(data)), test_size=TEST_SIZE, random_state=42)
+    print("Train split : {} test split : {} ".format(len(train_indices), len(test_indices)))
 
-    transform = transforms.Compose(
-        [transforms.Resize((250, 250)),
-         transforms.ToTensor(),
-         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    train_split = Subset(data, train_indices)
+    test_split = Subset(data, test_indices)
 
-
-    print("Loading training and validation set")
-    train_dataset = FaceMaskDataset(images, train_indexes, transform)
-    print("Train Dataset length ", len(train_dataset))
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=25, shuffle=True, num_workers=0)
-
-
-    # COMPILE AND TEST MODEL
-    print("Training our Model")
     model = CNN()
+    model = model.to(device)
 
-    results = fit(2, 0.01, model, train_loader, torch.optim.ASGD)
+    num_epochs = 10
+    batch_size = 25
+    k = 10
+    splits = KFold(n_splits=k, shuffle=True, random_state=42)
+    foldperf = {}
+    final_results = []
 
-    # Save model
+    for fold, (train_idx, valid_idx) in enumerate(splits.split(np.arange(len(train_split)))):
+        print('Fold {}'.format(fold + 1))
+        train_sampler = SubsetRandomSampler(train_idx)
+        valid_sampler = SubsetRandomSampler(valid_idx)
+        train_loader = DataLoader(train_split, batch_size=batch_size, sampler=train_sampler)
+        valid_loader = DataLoader(train_split, batch_size=batch_size, sampler=valid_sampler)
+
+        results = fit(num_epochs, 0.0001, model, train_loader, valid_loader, torch.optim.ASGD)
+        evaluate()
+        final_results.append(results)
+        foldperf['fold{}'.format(fold + 1)] = results
+
+        # Save model
     print("Saving model to ", join(BASE, "model.pth"))
     torch.save(model.state_dict(), join(BASE, "model.pth"))
 
     # Plotting loss vs epoch chart
     plot_losses(results)
 
-
-    # Testing phase
-    test_dataset = FaceMaskDataset(images, test_indexes, conversion=transform)
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=25, shuffle=True, num_workers=0)
-
+    #Testing new images
+    test_loader = torch.utils.data.DataLoader(dataset=test_split, batch_size=25, shuffle=True, num_workers=0)
     y_true = torch.tensor([])
     y_preds = torch.tensor([])
 

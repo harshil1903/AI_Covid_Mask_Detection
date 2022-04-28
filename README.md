@@ -17,7 +17,7 @@ Project Files:
 5. Project_Report(Phase-I).pdf :- The report for the project phase 1.
 6. Expectation of originality form.
 
-Link for the dataset (training data) : [Model](https://drive.google.com/drive/folders/1phH0zIYKe6vnlu3l3E_02enxFn4J2ghn?usp=sharing)
+Link for the dataset (training data) : [Model](https://drive.google.com/file/d/11GxXPnrqInHe7Sgs3L9PqXF9k-_1_mbI/view?usp=sharing) [Dataset](https://drive.google.com/drive/folders/1dHMTfi06zapSD5Q10smseDc_ayUVVsTy?usp=sharing)
 
 To start the training follow these steps :-
 
